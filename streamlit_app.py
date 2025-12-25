@@ -50,7 +50,7 @@ def normalize_job_title(title):
 @st.cache_data
 def load_data():
     # Charger le CSV avec gestion des types mixtes
-    df = pd.read_csv('TAM Corporations IP Patent Litigation.csv', low_memory=False)
+    df = pd.read_csv('data/TAM_Corporations_IP_Patent_Litigation.csv', low_memory=False)
 
     # Nettoyer les noms de colonnes (remplacer les sauts de ligne et les espaces)
     df.columns = [c.replace('\n', ' ').strip() for c in df.columns]
