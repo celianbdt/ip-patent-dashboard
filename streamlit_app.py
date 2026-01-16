@@ -524,7 +524,7 @@ chart_layout = dict(
 # === ONGLET 1: VUE GLOBALE (basé sur les ACCOUNTS) ===
 with tab1:
     st.caption("Toutes les statistiques sont basées sur le nombre d'entreprises (accounts), pas sur les profils individuels.")
-    
+
     col1, col2 = st.columns(2)
 
     with col1:
@@ -687,7 +687,7 @@ with tab1:
 # === ONGLET 2: STRATÉGIE IP (basé sur les ACCOUNTS) ===
 with tab2:
     st.caption("Statistiques basées sur les accounts (entreprises uniques).")
-    
+
     # Ajouter Workflow et Persona au df_companies si pas déjà fait
     if 'Entreprise' in df_filtered.columns and len(df_companies) > 0:
         if 'Workflow' not in df_companies.columns and 'Workflow' in df_filtered.columns:
@@ -696,7 +696,7 @@ with tab2:
         if 'Persona' not in df_companies.columns and 'Persona' in df_filtered.columns:
             persona_by_company = df_filtered.groupby('Entreprise')['Persona'].agg(lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown')
             df_companies = df_companies.merge(persona_by_company.reset_index(), on='Entreprise', how='left')
-    
+
     col1, col2 = st.columns(2)
 
     with col1:
@@ -871,7 +871,6 @@ with tab3:
 
     # Seniority par Tier
     if 'Seniority' in df_filtered.columns and 'Tier' in df_filtered.columns:
-        st.markdown("### Séniorité par Tiering")
 
         tier_seniority = pd.crosstab(df_filtered['Tier'], df_filtered['Seniority'], normalize='index') * 100
         tier_order = ['T1', 'T2', 'T3']
@@ -895,6 +894,7 @@ with tab3:
             ))
 
         fig_tier_sen.update_layout(
+            title='Séniorité par Tiering',
             barmode='stack',
             xaxis_title='Tier',
             yaxis_title='Pourcentage (%)',
@@ -905,8 +905,6 @@ with tab3:
 
     # Seniority par Persona
     if 'Seniority' in df_filtered.columns and 'Persona' in df_filtered.columns:
-        st.markdown("### Séniorité par Persona")
-
         persona_seniority = pd.crosstab(df_filtered['Persona'], df_filtered['Seniority'], normalize='index') * 100
 
         sen_order = ['Entry', 'Junior', 'Mid', 'Senior', 'Executive']
@@ -927,6 +925,7 @@ with tab3:
             ))
 
         fig_persona_sen.update_layout(
+            title='Séniorité par Persona',
             barmode='stack',
             xaxis_title='Persona',
             yaxis_title='Pourcentage (%)',
