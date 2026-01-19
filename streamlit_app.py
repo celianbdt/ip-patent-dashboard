@@ -256,7 +256,7 @@ st.markdown("*Analyse des profils et entreprises dans le domaine de la propriét
 # Chargement des données
 @st.cache_data
 def load_data():
-    df = pd.read_csv('data/TAM with Tiering Export.csv', low_memory=False)
+    df = pd.read_csv('data/Merged TAM Data.csv', low_memory=False)
 
     # Nettoyer les noms de colonnes
     df.columns = [c.replace('\n', ' ').strip() for c in df.columns]
@@ -268,7 +268,10 @@ def load_data():
         'Size': 'CompanySize',
         'Secteurs d\'activité': 'Industry',
         'Lieu': 'Location',
-        'Region (2)': 'Region'
+        'Region (2)': 'Region',
+        'Patents filed 2023-2026': 'Patents_Recent',
+        'Patent Portfolio size': 'Patents_Total',
+        'Nombre_IP_Pro': 'IP_Team_Size'
     }
 
     df.rename(columns=column_mapping, inplace=True)
@@ -276,6 +279,14 @@ def load_data():
     # Convertir Headcount en numérique
     if 'Headcount' in df.columns:
         df['Headcount'] = pd.to_numeric(df['Headcount'], errors='coerce')
+
+    # Convertir les colonnes numériques
+    if 'IP_Team_Size' in df.columns:
+        df['IP_Team_Size'] = pd.to_numeric(df['IP_Team_Size'], errors='coerce').fillna(0).astype(int)
+    if 'Patents_Recent' in df.columns:
+        df['Patents_Recent'] = pd.to_numeric(df['Patents_Recent'], errors='coerce')
+    if 'Patents_Total' in df.columns:
+        df['Patents_Total'] = pd.to_numeric(df['Patents_Total'], errors='coerce')
 
     # Extraire le pays de la location
     if 'Location' in df.columns:
@@ -386,8 +397,31 @@ include_personas, exclude_personas = create_filter_with_exclude(
     "Persona", "Persona"
 )
 
+# Filtre Taille équipe IP (slider)
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Taille équipe IP**")
+if 'IP_Team_Size' in df.columns:
+    min_ip = int(df['IP_Team_Size'].min())
+    max_ip = int(df['IP_Team_Size'].max())
+    ip_team_range = st.sidebar.slider(
+        "Nombre de personnes IP",
+        min_value=min_ip,
+        max_value=min(max_ip, 500),  # Cap à 500 pour lisibilité
+        value=(min_ip, min(max_ip, 500)),
+        help="Filtrer par nombre de personnes travaillant en IP dans l'entreprise"
+    )
+else:
+    ip_team_range = (0, 9999)
+
 # Appliquer les filtres
 df_filtered = df.copy()
+
+# Filtre IP Team Size
+if 'IP_Team_Size' in df_filtered.columns:
+    df_filtered = df_filtered[
+        (df_filtered['IP_Team_Size'] >= ip_team_range[0]) &
+        (df_filtered['IP_Team_Size'] <= ip_team_range[1])
+    ]
 
 # Appliquer INCLUSIONS (si sélectionnées)
 if include_tiers:
@@ -442,18 +476,36 @@ if active_filters:
 
 # Créer un dataframe au niveau entreprise (1 ligne par account)
 if 'Entreprise' in df_filtered.columns:
-    # Agréger au niveau entreprise - prendre les valeurs les plus fréquentes
-    df_companies = df_filtered.groupby('Entreprise').agg({
+    # Définir les colonnes d'agrégation
+    agg_dict = {
         'Tier': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
         'Region': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
         'Industry': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
         'CompanySize': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
-    }).reset_index()
+    }
+
+    # Ajouter les colonnes patents si elles existent (prendre la première valeur - c'est par entreprise)
+    if 'IP_Team_Size' in df_filtered.columns:
+        agg_dict['IP_Team_Size'] = 'first'
+    if 'Patents_Recent' in df_filtered.columns:
+        agg_dict['Patents_Recent'] = 'first'
+    if 'Patents_Total' in df_filtered.columns:
+        agg_dict['Patents_Total'] = 'first'
+
+    df_companies = df_filtered.groupby('Entreprise').agg(agg_dict).reset_index()
     df_companies['Profile_Count'] = df_filtered.groupby('Entreprise').size().values
     total_accounts = len(df_companies)
+
+    # Calculer les totaux de brevets (sans duplication)
+    total_patents_recent = df_companies['Patents_Recent'].sum() if 'Patents_Recent' in df_companies.columns else 0
+    total_patents = df_companies['Patents_Total'].sum() if 'Patents_Total' in df_companies.columns else 0
+    accounts_with_patents = df_companies['Patents_Total'].notna().sum() if 'Patents_Total' in df_companies.columns else 0
 else:
     df_companies = pd.DataFrame()
     total_accounts = 0
+    total_patents_recent = 0
+    total_patents = 0
+    accounts_with_patents = 0
 
 total_profiles = len(df_filtered)
 
@@ -462,7 +514,7 @@ st.sidebar.info(f"**{total_accounts:,}** accounts | **{total_profiles:,}** profi
 # === KPIs EN HAUT ===
 st.markdown("### Indicateurs Clés")
 
-kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
 
 with kpi1:
     st.metric("ACCOUNTS", f"{total_accounts:,}")
@@ -487,6 +539,12 @@ with kpi5:
         t3_accounts = len(df_companies[df_companies['Tier'] == 'T3'])
         t3_pct = (t3_accounts / total_accounts * 100)
         st.metric("TIER 3", f"{t3_accounts:,}", f"{t3_pct:.1f}%")
+
+with kpi6:
+    if total_patents > 0:
+        st.metric("BREVETS", f"{int(total_patents):,}", f"{accounts_with_patents} accounts")
+    else:
+        st.metric("BREVETS", "N/A")
 
 st.markdown("---")
 
