@@ -256,7 +256,7 @@ st.markdown("*Analyse des profils et entreprises dans le domaine de la propriét
 # Chargement des données
 @st.cache_data
 def load_data():
-    df = pd.read_csv('data/Merged TAM Data.csv', low_memory=False)
+    df = pd.read_csv('data/Merged TAM with Brevets.csv', low_memory=False)
 
     # Nettoyer les noms de colonnes
     df.columns = [c.replace('\n', ' ').strip() for c in df.columns]
@@ -269,8 +269,8 @@ def load_data():
         'Secteurs d\'activité': 'Industry',
         'Lieu': 'Location',
         'Region (2)': 'Region',
-        'Patents filed 2023-2026': 'Patents_Recent',
-        'Patent Portfolio size': 'Patents_Total',
+        'Brevets des 3 dernières années': 'Patents_Recent',
+        'Total Brevets': 'Patents_Total',
         'Nombre_IP_Pro': 'IP_Team_Size'
     }
 
