@@ -397,31 +397,71 @@ include_personas, exclude_personas = create_filter_with_exclude(
     "Persona", "Persona"
 )
 
-# Filtre Taille équipe IP (slider)
+# === DÉFINITION TIERING PERSONNALISÉ ===
 st.sidebar.markdown("---")
-st.sidebar.markdown("**Taille équipe IP**")
-if 'IP_Team_Size' in df.columns:
-    min_ip = int(df['IP_Team_Size'].min())
-    max_ip = int(df['IP_Team_Size'].max())
-    ip_team_range = st.sidebar.slider(
-        "Nombre de personnes IP",
-        min_value=min_ip,
-        max_value=min(max_ip, 500),  # Cap à 500 pour lisibilité
-        value=(min_ip, min(max_ip, 500)),
-        help="Filtrer par nombre de personnes travaillant en IP dans l'entreprise"
-    )
-else:
-    ip_team_range = (0, 9999)
+st.sidebar.markdown("## Tiering Personnalisé")
+st.sidebar.caption("Définissez vos propres critères de tiering")
+
+# Valeurs par défaut pour le tiering
+with st.sidebar.expander("Définir les Tiers", expanded=False):
+    st.markdown("**Critères : Personnes IP + Brevets 3 ans**")
+
+    # TIER 1
+    st.markdown("**TIER 1** (Grands comptes)")
+    col_t1a, col_t1b = st.columns(2)
+    with col_t1a:
+        t1_ip_min = st.number_input("IP min", value=30, min_value=0, key="t1_ip_min")
+        t1_patents_min = st.number_input("Brevets 3a min", value=0, min_value=0, key="t1_pat_min")
+    with col_t1b:
+        t1_ip_max = st.number_input("IP max", value=9999, min_value=0, key="t1_ip_max")
+        t1_patents_max = st.number_input("Brevets 3a max", value=999999, min_value=0, key="t1_pat_max")
+
+    st.markdown("---")
+
+    # TIER 2
+    st.markdown("**TIER 2** (Moyens comptes)")
+    col_t2a, col_t2b = st.columns(2)
+    with col_t2a:
+        t2_ip_min = st.number_input("IP min", value=5, min_value=0, key="t2_ip_min")
+        t2_patents_min = st.number_input("Brevets 3a min", value=0, min_value=0, key="t2_pat_min")
+    with col_t2b:
+        t2_ip_max = st.number_input("IP max", value=29, min_value=0, key="t2_ip_max")
+        t2_patents_max = st.number_input("Brevets 3a max", value=999999, min_value=0, key="t2_pat_max")
+
+    st.markdown("---")
+
+    # TIER 3
+    st.markdown("**TIER 3** (Petits comptes)")
+    col_t3a, col_t3b = st.columns(2)
+    with col_t3a:
+        t3_ip_min = st.number_input("IP min", value=0, min_value=0, key="t3_ip_min")
+        t3_patents_min = st.number_input("Brevets 3a min", value=0, min_value=0, key="t3_pat_min")
+    with col_t3b:
+        t3_ip_max = st.number_input("IP max", value=4, min_value=0, key="t3_ip_max")
+        t3_patents_max = st.number_input("Brevets 3a max", value=999999, min_value=0, key="t3_pat_max")
+
+# Calculer le tiering personnalisé
+def calculate_custom_tier(row):
+    ip_count = row.get('IP_Team_Size', 0) or 0
+    patents_3y = row.get('Patents_Recent', 0) or 0
+
+    # T1 : vérifie les conditions
+    if (t1_ip_min <= ip_count <= t1_ip_max) and (t1_patents_min <= patents_3y <= t1_patents_max):
+        return 'T1'
+    # T2
+    elif (t2_ip_min <= ip_count <= t2_ip_max) and (t2_patents_min <= patents_3y <= t2_patents_max):
+        return 'T2'
+    # T3
+    elif (t3_ip_min <= ip_count <= t3_ip_max) and (t3_patents_min <= patents_3y <= t3_patents_max):
+        return 'T3'
+    else:
+        return 'Non classé'
+
+# Appliquer le tiering personnalisé
+df['Custom_Tier'] = df.apply(calculate_custom_tier, axis=1)
 
 # Appliquer les filtres
 df_filtered = df.copy()
-
-# Filtre IP Team Size
-if 'IP_Team_Size' in df_filtered.columns:
-    df_filtered = df_filtered[
-        (df_filtered['IP_Team_Size'] >= ip_team_range[0]) &
-        (df_filtered['IP_Team_Size'] <= ip_team_range[1])
-    ]
 
 # Appliquer INCLUSIONS (si sélectionnées)
 if include_tiers:
@@ -479,6 +519,7 @@ if 'Entreprise' in df_filtered.columns:
     # Définir les colonnes d'agrégation
     agg_dict = {
         'Tier': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
+        'Custom_Tier': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Non classé',
         'Region': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
         'Industry': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
         'CompanySize': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
@@ -512,39 +553,48 @@ total_profiles = len(df_filtered)
 st.sidebar.info(f"**{total_accounts:,}** accounts | **{total_profiles:,}** profils")
 
 # === KPIs EN HAUT ===
-st.markdown("### Indicateurs Clés")
+st.markdown("### Indicateurs Clés (Tiering Personnalisé)")
 
-kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
+# Première ligne : Accounts, Profils, Brevets, Non classé
+kpi_row1_col1, kpi_row1_col2, kpi_row1_col3, kpi_row1_col4 = st.columns(4)
 
-with kpi1:
+with kpi_row1_col1:
     st.metric("ACCOUNTS", f"{total_accounts:,}")
 
-with kpi2:
+with kpi_row1_col2:
     st.metric("PROFILS", f"{total_profiles:,}")
 
-with kpi3:
-    if 'Tier' in df_companies.columns and total_accounts > 0:
-        t1_accounts = len(df_companies[df_companies['Tier'] == 'T1'])
+with kpi_row1_col3:
+    if total_patents > 0:
+        st.metric("BREVETS TOTAL", f"{int(total_patents):,}", f"{accounts_with_patents} accounts")
+    else:
+        st.metric("BREVETS TOTAL", "N/A")
+
+with kpi_row1_col4:
+    if 'Custom_Tier' in df_companies.columns and total_accounts > 0:
+        unclassified = len(df_companies[df_companies['Custom_Tier'] == 'Non classé'])
+        st.metric("NON CLASSÉ", f"{unclassified:,}", f"{unclassified/total_accounts*100:.1f}%")
+
+# Deuxième ligne : Tier 1, Tier 2, Tier 3
+kpi_row2_col1, kpi_row2_col2, kpi_row2_col3 = st.columns(3)
+
+with kpi_row2_col1:
+    if 'Custom_Tier' in df_companies.columns and total_accounts > 0:
+        t1_accounts = len(df_companies[df_companies['Custom_Tier'] == 'T1'])
         t1_pct = (t1_accounts / total_accounts * 100)
         st.metric("TIER 1", f"{t1_accounts:,}", f"{t1_pct:.1f}%")
 
-with kpi4:
-    if 'Tier' in df_companies.columns and total_accounts > 0:
-        t2_accounts = len(df_companies[df_companies['Tier'] == 'T2'])
+with kpi_row2_col2:
+    if 'Custom_Tier' in df_companies.columns and total_accounts > 0:
+        t2_accounts = len(df_companies[df_companies['Custom_Tier'] == 'T2'])
         t2_pct = (t2_accounts / total_accounts * 100)
         st.metric("TIER 2", f"{t2_accounts:,}", f"{t2_pct:.1f}%")
 
-with kpi5:
-    if 'Tier' in df_companies.columns and total_accounts > 0:
-        t3_accounts = len(df_companies[df_companies['Tier'] == 'T3'])
+with kpi_row2_col3:
+    if 'Custom_Tier' in df_companies.columns and total_accounts > 0:
+        t3_accounts = len(df_companies[df_companies['Custom_Tier'] == 'T3'])
         t3_pct = (t3_accounts / total_accounts * 100)
         st.metric("TIER 3", f"{t3_accounts:,}", f"{t3_pct:.1f}%")
-
-with kpi6:
-    if total_patents > 0:
-        st.metric("BREVETS", f"{int(total_patents):,}", f"{accounts_with_patents} accounts")
-    else:
-        st.metric("BREVETS", "N/A")
 
 st.markdown("---")
 
@@ -586,24 +636,24 @@ with tab1:
     col1, col2 = st.columns(2)
 
     with col1:
-        # Distribution par Tier (basé sur les accounts)
-        if 'Tier' in df_companies.columns and len(df_companies) > 0:
-            tier_counts = df_companies['Tier'].value_counts()
-            tier_order = ['T1', 'T2', 'T3']
+        # Distribution par Tier PERSONNALISÉ (basé sur les accounts)
+        if 'Custom_Tier' in df_companies.columns and len(df_companies) > 0:
+            tier_counts = df_companies['Custom_Tier'].value_counts()
+            tier_order = ['T1', 'T2', 'T3', 'Non classé']
             tier_counts = tier_counts.reindex([t for t in tier_order if t in tier_counts.index])
 
             fig_tier = go.Figure(data=[go.Pie(
                 labels=tier_counts.index,
                 values=tier_counts.values,
                 hole=0.5,
-                marker=dict(colors=['#6366f1', '#8b5cf6', '#f97316']),
+                marker=dict(colors=['#6366f1', '#8b5cf6', '#f97316', '#64748b']),
                 textinfo='label+percent',
                 textfont=dict(size=14, color='white', family='Inter, sans-serif'),
                 hovertemplate='<b>%{label}</b><br>Accounts: %{value:,}<br>Pourcentage: %{percent}<extra></extra>'
             )])
 
             fig_tier.update_layout(
-                title='Distribution par Tiering (Accounts)',
+                title='Distribution par Tiering Personnalisé',
                 **chart_layout,
                 height=400,
                 showlegend=True,
@@ -802,11 +852,11 @@ with tab2:
             st.plotly_chart(fig_persona, use_container_width=True)
 
     # Tier vs Workflow (basé sur les accounts)
-    if 'Tier' in df_companies.columns and 'Workflow' in df_companies.columns and len(df_companies) > 0:
-        st.markdown("### Tiering vs Workflow (Accounts)")
+    if 'Custom_Tier' in df_companies.columns and 'Workflow' in df_companies.columns and len(df_companies) > 0:
+        st.markdown("### Tiering Personnalisé vs Workflow (Accounts)")
 
-        tier_workflow = pd.crosstab(df_companies['Tier'], df_companies['Workflow'])
-        tier_order = ['T1', 'T2', 'T3']
+        tier_workflow = pd.crosstab(df_companies['Custom_Tier'], df_companies['Workflow'])
+        tier_order = ['T1', 'T2', 'T3', 'Non classé']
         tier_workflow = tier_workflow.reindex([t for t in tier_order if t in tier_workflow.index])
 
         fig_tier_workflow = go.Figure()
@@ -838,8 +888,9 @@ with tab2:
 
         company_stats = df_filtered.groupby('Entreprise').agg({
             'Headcount': 'first',
-            'Tier': 'first'
+            'Custom_Tier': 'first'
         }).reset_index()
+        company_stats.rename(columns={'Custom_Tier': 'Tier'}, inplace=True)
 
         profile_counts = df_filtered.groupby('Entreprise').size().reset_index(name='IP_Profiles')
         company_stats = company_stats.merge(profile_counts, on='Entreprise')
@@ -905,8 +956,8 @@ with tab2:
 
             with col_b1:
                 # Distribution des brevets totaux par Tier
-                if 'Tier' in df_with_patents.columns:
-                    tier_patents = df_with_patents.groupby('Tier').agg({
+                if 'Custom_Tier' in df_with_patents.columns:
+                    tier_patents = df_with_patents.groupby('Custom_Tier').agg({
                         'Patents_Total': 'mean',
                         'Patents_Recent': 'mean'
                     }).reindex(['T1', 'T2', 'T3']).dropna()
@@ -945,10 +996,10 @@ with tab2:
                 # Distribution (box plot) des brevets
                 fig_box = px.box(
                     df_with_patents,
-                    x='Tier',
+                    x='Custom_Tier',
                     y='Patents_Total',
-                    color='Tier',
-                    color_discrete_map={'T1': '#6366f1', 'T2': '#8b5cf6', 'T3': '#f97316'},
+                    color='Custom_Tier',
+                    color_discrete_map={'T1': '#6366f1', 'T2': '#8b5cf6', 'T3': '#f97316', 'Non classé': '#64748b'},
                     hover_data=['Entreprise']
                 )
 
@@ -965,7 +1016,7 @@ with tab2:
                 st.plotly_chart(fig_box, use_container_width=True)
 
             # Top 10 entreprises par brevets
-            top_patent_companies = df_with_patents.nlargest(10, 'Patents_Total')[['Entreprise', 'Patents_Total', 'Patents_Recent', 'Tier']]
+            top_patent_companies = df_with_patents.nlargest(10, 'Patents_Total')[['Entreprise', 'Patents_Total', 'Patents_Recent', 'Custom_Tier']]
 
             fig_top_patents = go.Figure(data=[go.Bar(
                 y=top_patent_companies['Entreprise'][::-1],
@@ -1051,10 +1102,10 @@ with tab3:
             st.plotly_chart(fig_jobs, use_container_width=True)
 
     # Seniority par Tier
-    if 'Seniority' in df_filtered.columns and 'Tier' in df_filtered.columns:
+    if 'Seniority' in df_filtered.columns and 'Custom_Tier' in df_filtered.columns:
 
-        tier_seniority = pd.crosstab(df_filtered['Tier'], df_filtered['Seniority'], normalize='index') * 100
-        tier_order = ['T1', 'T2', 'T3']
+        tier_seniority = pd.crosstab(df_filtered['Custom_Tier'], df_filtered['Seniority'], normalize='index') * 100
+        tier_order = ['T1', 'T2', 'T3', 'Non classé']
         tier_seniority = tier_seniority.reindex([t for t in tier_order if t in tier_seniority.index])
 
         sen_order = ['Entry', 'Junior', 'Mid', 'Senior', 'Executive']
