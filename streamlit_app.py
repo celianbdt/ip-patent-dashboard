@@ -869,6 +869,129 @@ with tab2:
             )
             st.plotly_chart(fig_density, use_container_width=True)
 
+    # === SECTION BREVETS ===
+    st.markdown("---")
+    st.markdown("### Analyse des Brevets")
+
+    # Filtrer les accounts avec des brevets (>0) - ne pas compter ceux sans données
+    if 'Patents_Total' in df_companies.columns:
+        df_with_patents = df_companies[df_companies['Patents_Total'] > 0].copy()
+        accounts_with_patents_count = len(df_with_patents)
+
+        if accounts_with_patents_count > 0:
+            # KPIs Brevets
+            col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+
+            with col_p1:
+                avg_total = df_with_patents['Patents_Total'].mean()
+                st.metric("MOY. BREVETS TOTAL", f"{avg_total:,.0f}")
+
+            with col_p2:
+                avg_recent = df_with_patents['Patents_Recent'].mean() if 'Patents_Recent' in df_with_patents.columns else 0
+                st.metric("MOY. BREVETS 3 ANS", f"{avg_recent:,.0f}")
+
+            with col_p3:
+                median_total = df_with_patents['Patents_Total'].median()
+                st.metric("MÉDIANE BREVETS", f"{median_total:,.0f}")
+
+            with col_p4:
+                st.metric("ACCOUNTS AVEC BREVETS", f"{accounts_with_patents_count:,}",
+                         f"{accounts_with_patents_count/total_accounts*100:.1f}%")
+
+            st.caption(f"Statistiques calculées uniquement sur les {accounts_with_patents_count:,} accounts ayant des données de brevets (brevets > 0).")
+
+            # Graphiques brevets
+            col_b1, col_b2 = st.columns(2)
+
+            with col_b1:
+                # Distribution des brevets totaux par Tier
+                if 'Tier' in df_with_patents.columns:
+                    tier_patents = df_with_patents.groupby('Tier').agg({
+                        'Patents_Total': 'mean',
+                        'Patents_Recent': 'mean'
+                    }).reindex(['T1', 'T2', 'T3']).dropna()
+
+                    fig_patents_tier = go.Figure()
+                    fig_patents_tier.add_trace(go.Bar(
+                        name='Brevets Total (moy)',
+                        x=tier_patents.index,
+                        y=tier_patents['Patents_Total'],
+                        marker_color='#6366f1',
+                        text=[f'{v:,.0f}' for v in tier_patents['Patents_Total']],
+                        textposition='outside',
+                        textfont=dict(color='white', family='Inter, sans-serif')
+                    ))
+                    fig_patents_tier.add_trace(go.Bar(
+                        name='Brevets 3 ans (moy)',
+                        x=tier_patents.index,
+                        y=tier_patents['Patents_Recent'],
+                        marker_color='#f97316',
+                        text=[f'{v:,.0f}' for v in tier_patents['Patents_Recent']],
+                        textposition='outside',
+                        textfont=dict(color='white', family='Inter, sans-serif')
+                    ))
+
+                    fig_patents_tier.update_layout(
+                        title='Moyenne Brevets par Tier',
+                        barmode='group',
+                        xaxis_title='Tier',
+                        yaxis_title='Nombre moyen de brevets',
+                        **chart_layout,
+                        height=400
+                    )
+                    st.plotly_chart(fig_patents_tier, use_container_width=True)
+
+            with col_b2:
+                # Distribution (box plot) des brevets
+                fig_box = px.box(
+                    df_with_patents,
+                    x='Tier',
+                    y='Patents_Total',
+                    color='Tier',
+                    color_discrete_map={'T1': '#6366f1', 'T2': '#8b5cf6', 'T3': '#f97316'},
+                    hover_data=['Entreprise']
+                )
+
+                fig_box.update_layout(
+                    title='Distribution Brevets Total par Tier',
+                    xaxis_title='Tier',
+                    yaxis_title='Nombre de brevets',
+                    **chart_layout,
+                    height=400,
+                    showlegend=False
+                )
+                # Limiter l'axe Y pour meilleure lisibilité
+                fig_box.update_yaxes(range=[0, df_with_patents['Patents_Total'].quantile(0.95)])
+                st.plotly_chart(fig_box, use_container_width=True)
+
+            # Top 10 entreprises par brevets
+            top_patent_companies = df_with_patents.nlargest(10, 'Patents_Total')[['Entreprise', 'Patents_Total', 'Patents_Recent', 'Tier']]
+
+            fig_top_patents = go.Figure(data=[go.Bar(
+                y=top_patent_companies['Entreprise'][::-1],
+                x=top_patent_companies['Patents_Total'][::-1],
+                orientation='h',
+                marker=dict(
+                    color=top_patent_companies['Patents_Total'][::-1],
+                    colorscale=[[0, '#6366f1'], [1, '#f97316']],
+                    showscale=False
+                ),
+                text=[f'{v:,.0f}' for v in top_patent_companies['Patents_Total'][::-1]],
+                textposition='outside',
+                textfont=dict(color='white', size=11, family='Inter, sans-serif')
+            )])
+
+            fig_top_patents.update_layout(
+                title='Top 10 Accounts par Nombre de Brevets',
+                xaxis_title='Nombre total de brevets',
+                yaxis_title='',
+                **chart_layout,
+                height=450
+            )
+            st.plotly_chart(fig_top_patents, use_container_width=True)
+        else:
+            st.info("Aucun account avec des données de brevets dans la sélection actuelle.")
+
 # === ONGLET 3: TALENT & SÉNIORITÉ ===
 with tab3:
     col1, col2 = st.columns(2)
