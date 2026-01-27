@@ -256,8 +256,13 @@ st.markdown("*Analyse des profils et entreprises dans le domaine de la propriét
 # Chargement des données
 @st.cache_data
 def load_data():
+    # Charger le fichier principal
     df = pd.read_csv('data/Merged TAM with Brevets.csv', low_memory=False)
 
+    # Charger la liste de référence des comptes
+    accounts_ref = pd.read_csv('data/Final Accounts Summary.csv', low_memory=False)
+    valid_accounts = set(accounts_ref['normalized_company_name_tam'].dropna().unique())
+    
     # Nettoyer les noms de colonnes
     df.columns = [c.replace('\n', ' ').strip() for c in df.columns]
 
@@ -275,6 +280,11 @@ def load_data():
     }
 
     df.rename(columns=column_mapping, inplace=True)
+    
+    # FILTRER : Ne garder que les comptes qui sont dans la liste de référence
+    if 'normalized_company_name_tam' in df.columns:
+        df = df[df['normalized_company_name_tam'].isin(valid_accounts)].copy()
+        st.info(f"✅ Filtrage appliqué : {len(valid_accounts):,} comptes de référence | {len(df):,} profils")
 
     # Convertir Headcount en numérique
     if 'Headcount' in df.columns:
@@ -515,9 +525,11 @@ if active_filters:
         st.sidebar.caption(f"... et {len(active_filters) - 5} autres")
 
 # Créer un dataframe au niveau entreprise (1 ligne par account)
-if 'Entreprise' in df_filtered.columns:
+# Utiliser normalized_company_name_tam comme clé principale (5,816 comptes uniques)
+if 'normalized_company_name_tam' in df_filtered.columns:
     # Définir les colonnes d'agrégation
     agg_dict = {
+        'Entreprise': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',  # Garder le nom d'entreprise le plus fréquent
         'Tier': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
         'Custom_Tier': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Non classé',
         'Region': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
@@ -525,7 +537,7 @@ if 'Entreprise' in df_filtered.columns:
         'CompanySize': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
     }
 
-    # Ajouter les colonnes patents si elles existent (prendre la première valeur - c'est par entreprise)
+    # Ajouter les colonnes patents si elles existent (prendre la première valeur - c'est par account)
     if 'IP_Team_Size' in df_filtered.columns:
         agg_dict['IP_Team_Size'] = 'first'
     if 'Patents_Recent' in df_filtered.columns:
@@ -533,8 +545,10 @@ if 'Entreprise' in df_filtered.columns:
     if 'Patents_Total' in df_filtered.columns:
         agg_dict['Patents_Total'] = 'first'
 
-    df_companies = df_filtered.groupby('Entreprise').agg(agg_dict).reset_index()
-    df_companies['Profile_Count'] = df_filtered.groupby('Entreprise').size().values
+    # Grouper par normalized_company_name_tam (la clé de référence)
+    df_companies = df_filtered.groupby('normalized_company_name_tam').agg(agg_dict).reset_index()
+    df_companies.rename(columns={'normalized_company_name_tam': 'Account_Key'}, inplace=True)
+    df_companies['Profile_Count'] = df_filtered.groupby('normalized_company_name_tam').size().values
     total_accounts = len(df_companies)
 
     # Calculer les totaux de brevets (sans duplication)
