@@ -253,9 +253,18 @@ st.markdown("""
 st.markdown("# Dashboard IP - Analyse TAM")
 st.markdown("*Analyse des profils et entreprises dans le domaine de la propriété intellectuelle*")
 
+# === SÉLECTION DE LA VISION (Corporate vs Law firms) ===
+st.sidebar.markdown("## Vision")
+vision = st.sidebar.radio(
+    "Choisir la cible d’accounts",
+    ["Corporate", "Law firms"],
+    key="vision_selector",
+)
+key_prefix = "corp" if vision == "Corporate" else "law"
+
 # Chargement des données
 @st.cache_data
-def load_data():
+def load_corporate_data():
     # Charger le fichier principal
     df = pd.read_csv('data/Merged TAM with Brevets.csv', low_memory=False)
 
@@ -327,11 +336,149 @@ def load_data():
         else:
             df[col] = df[col].fillna(0)
 
+    # Clé account unifiée
+    if 'normalized_company_name_tam' in df.columns:
+        df['Account_Key'] = df['normalized_company_name_tam']
+
+    return df
+
+@st.cache_data
+def load_law_firm_data():
+    df = pd.read_csv('data/TAM Law Firms Deduplicate Export (2).csv', low_memory=False)
+
+    # Nettoyer les noms de colonnes
+    df.columns = [c.replace('\n', ' ').strip() for c in df.columns]
+
+    # Mapping vers les noms utilisés dans le dashboard
+    column_mapping = {
+        'Titre': 'JobTitle',
+        'Taille de l\'entreprise': 'Headcount',
+        'Secteurs d\'activité': 'Industry',
+        'Region': 'Region',
+        'Site web entreprise': 'Company Website',
+        'Adresse du siège social': 'Adresse du siège social',
+        'Primary': 'Persona',
+        'Primary (2)': 'Workflow',
+        'Primary (3)': 'Seniority',
+    }
+    df.rename(columns={k: v for k, v in column_mapping.items() if k in df.columns}, inplace=True)
+
+    # Convertir Headcount en numérique si possible
+    if 'Headcount' in df.columns:
+        df['Headcount'] = pd.to_numeric(df['Headcount'], errors='coerce')
+
+    # Créer CompanySize à partir de Headcount (si absent)
+    if 'CompanySize' not in df.columns:
+        if 'Headcount' in df.columns and df['Headcount'].notna().any():
+            bins = [-np.inf, 50, 200, 1000, np.inf]
+            labels = ['Small', 'Medium', 'Large', 'Enterprise']
+            df['CompanySize'] = pd.cut(df['Headcount'], bins=bins, labels=labels).astype(str)
+            df['CompanySize'] = df['CompanySize'].replace({'nan': 'Unknown'})
+        else:
+            df['CompanySize'] = 'Unknown'
+
+    # Normaliser Region
+    if 'Region' in df.columns:
+        df['Region'] = df['Region'].fillna('NA')
+        df['Region'] = df['Region'].replace({'': 'NA', 'Error processing request': 'NA'})
+    else:
+        df['Region'] = 'NA'
+
+    # Persona, Workflow, Seniority : inférer depuis Titre (JobTitle) si manquant, sinon Unknown
+    titre_col = 'JobTitle' if 'JobTitle' in df.columns else 'Titre'
+    if titre_col not in df.columns:
+        titre_col = None
+
+    def _infer_workflow(titre):
+        if pd.isna(titre) or not isinstance(titre, str) or not titre.strip():
+            return None
+        t = titre.lower()
+        has_lit = 'litigation' in t
+        has_pros = 'prosecution' in t or 'preparation' in t
+        if has_lit and has_pros:
+            return 'Both'
+        if has_lit:
+            return 'Patent Litigation'
+        if has_pros or 'patent attorney' in t or 'patent agent' in t or 'patent engineer' in t:
+            return 'Patent Preparation & Prosecution'
+        if 'patent' in t or 'ip ' in t or 'intellectual property' in t:
+            return 'Both'
+        return None
+
+    def _infer_persona(titre):
+        if pd.isna(titre) or not isinstance(titre, str) or not titre.strip():
+            return None
+        t = titre.lower()
+        if 'paralegal' in t:
+            return 'Paralegal'
+        if 'patent attorney' in t or 'patentanwalt' in t or 'avocat' in t and 'brevet' in t:
+            return 'Patent Attorney'
+        if 'ip counsel' in t or 'counsel' in t and ('ip' in t or 'patent' in t):
+            return 'IP Counsel'
+        if 'patent agent' in t:
+            return 'Patent Agent'
+        if 'patent engineer' in t:
+            return 'Patent Engineer'
+        if 'ip operations' in t or 'ip strategy' in t:
+            return 'IP Operations'
+        if 'patent' in t or 'ip ' in t:
+            return 'IP Counsel'
+        return None
+
+    def _infer_seniority(titre):
+        if pd.isna(titre) or not isinstance(titre, str) or not titre.strip():
+            return None
+        t = titre.lower()
+        if any(x in t for x in ['partner', 'head of', 'director', 'chief', 'lead ']):
+            return 'Executive'
+        if 'senior' in t:
+            return 'Senior'
+        if 'junior' in t or 'associate' in t or 'trainee' in t:
+            return 'Junior'
+        if 'mid' in t:
+            return 'Mid'
+        return None
+
+    for col in ['Persona', 'Workflow', 'Seniority']:
+        if col not in df.columns:
+            df[col] = 'Unknown'
+        else:
+            s = df[col].astype(str).str.strip()
+            mask_missing = (s == '') | (s == 'nan') | df[col].isna()
+            if titre_col and mask_missing.any():
+                if col == 'Workflow':
+                    df.loc[mask_missing, col] = df.loc[mask_missing, titre_col].apply(_infer_workflow)
+                elif col == 'Persona':
+                    df.loc[mask_missing, col] = df.loc[mask_missing, titre_col].apply(_infer_persona)
+                elif col == 'Seniority':
+                    df.loc[mask_missing, col] = df.loc[mask_missing, titre_col].apply(_infer_seniority)
+            df[col] = df[col].fillna('Unknown')
+            df[col] = df[col].astype(str).replace('nan', 'Unknown').replace('', 'Unknown')
+            df.loc[df[col].str.strip() == '', col] = 'Unknown'
+    if 'Tier' not in df.columns:
+        df['Tier'] = 'Unknown'
+
+    # Clé account (cabinet) : URN entreprise > URL entreprise > Nom entreprise
+    def _pick_account_key(row):
+        for c in ['URN LinkedIn de l\'entreprise', 'URL LinkedIn (entreprise)', 'Entreprise']:
+            if c in row and isinstance(row[c], str) and row[c].strip():
+                return row[c].strip()
+        return 'Unknown'
+
+    df['Account_Key'] = df.apply(_pick_account_key, axis=1)
+
+    # Gestion des valeurs manquantes
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].fillna('Unknown')
+        else:
+            df[col] = df[col].fillna(0)
+
     return df
 
 # Charger les données
 try:
-    df = load_data()
+    df = load_corporate_data() if vision == "Corporate" else load_law_firm_data()
 except Exception as e:
     st.error(f"Erreur lors du chargement des données: {e}")
     st.stop()
@@ -341,13 +488,17 @@ st.sidebar.markdown("## Filtres")
 st.sidebar.caption("+ Inclure | - Exclure")
 
 # Fonction helper pour créer un filtre avec mode include/exclude
-def create_filter_with_exclude(label, column, help_text=None):
+def create_filter_with_exclude(label, column, help_text=None, df_source=None, key_prefix=""):
     """Crée un filtre avec possibilité d'inclure ou exclure"""
     include_list = []
     exclude_list = []
 
-    if column in df.columns:
-        values = sorted([v for v in df[column].unique() if v != 'Unknown' and pd.notna(v)])
+    df_source = df_source if df_source is not None else df
+    if column in df_source.columns:
+        values = sorted([v for v in df_source[column].unique() if v != 'Unknown' and pd.notna(v)])
+        # Si une seule valeur exploitable, inutile d'afficher le filtre
+        if len(values) <= 1:
+            return include_list, exclude_list
 
         with st.sidebar.expander(f"{label}", expanded=False):
             col1, col2 = st.columns(2)
@@ -357,7 +508,7 @@ def create_filter_with_exclude(label, column, help_text=None):
                     f"Inclure {label}",
                     values,
                     default=[],
-                    key=f"include_{column}",
+                    key=f"{key_prefix}_include_{column}",
                     label_visibility="collapsed"
                 )
             with col2:
@@ -368,7 +519,7 @@ def create_filter_with_exclude(label, column, help_text=None):
                     f"Exclure {label}",
                     available_for_exclude,
                     default=[],
-                    key=f"exclude_{column}",
+                    key=f"{key_prefix}_exclude_{column}",
                     label_visibility="collapsed"
                 )
             if help_text:
@@ -380,31 +531,44 @@ def create_filter_with_exclude(label, column, help_text=None):
 include_tiers, exclude_tiers = create_filter_with_exclude(
     "Tiering", "Tier",
     "T1: >30 profils IP | T2: 5-30 | T3: <5"
+    , df_source=df, key_prefix=key_prefix
 )
 
 # Filtre Région
 include_regions, exclude_regions = create_filter_with_exclude(
     "Région", "Region"
+    , df_source=df, key_prefix=key_prefix
+)
+
+# Filtre Company / Cabinet (Entreprise) — pour filtrer par law firm ou entreprise
+include_companies, exclude_companies = create_filter_with_exclude(
+    "Company / Cabinet", "Entreprise",
+    "Filtrer par nom d'entreprise ou de cabinet (ex. une seule law firm).",
+    df_source=df, key_prefix=key_prefix
 )
 
 # Filtre Industry
 include_industries, exclude_industries = create_filter_with_exclude(
     "Industrie", "Industry"
+    , df_source=df, key_prefix=key_prefix
 )
 
 # Filtre Company Size
 include_sizes, exclude_sizes = create_filter_with_exclude(
     "Taille entreprise", "CompanySize"
+    , df_source=df, key_prefix=key_prefix
 )
 
 # Filtre Seniority
 include_seniorities, exclude_seniorities = create_filter_with_exclude(
     "Séniorité", "Seniority"
+    , df_source=df, key_prefix=key_prefix
 )
 
 # Filtre Persona
 include_personas, exclude_personas = create_filter_with_exclude(
     "Persona", "Persona"
+    , df_source=df, key_prefix=key_prefix
 )
 
 # === DÉFINITION TIERING PERSONNALISÉ ===
@@ -414,17 +578,26 @@ st.sidebar.caption("Définissez vos propres critères de tiering")
 
 # Valeurs par défaut pour le tiering
 with st.sidebar.expander("Définir les Tiers", expanded=False):
-    st.markdown("**Critères : Personnes IP + Brevets 3 ans**")
+    if vision == "Corporate":
+        st.markdown("**Critères : Personnes IP + Brevets 3 ans**")
+    else:
+        st.markdown("**Critères : Nombre de contacts par cabinet (accounts uniques)**")
 
     # TIER 1
     st.markdown("**TIER 1** (Grands comptes)")
     col_t1a, col_t1b = st.columns(2)
     with col_t1a:
-        t1_ip_min = st.number_input("IP min", value=30, min_value=0, key="t1_ip_min")
-        t1_patents_min = st.number_input("Brevets 3a min", value=0, min_value=0, key="t1_pat_min")
+        if vision == "Corporate":
+            t1_ip_min = st.number_input("IP min", value=30, min_value=0, key=f"{key_prefix}_t1_ip_min")
+            t1_patents_min = st.number_input("Brevets 3a min", value=0, min_value=0, key=f"{key_prefix}_t1_pat_min")
+        else:
+            t1_contacts_min = st.number_input("Contacts min", value=30, min_value=0, key=f"{key_prefix}_t1_contacts_min")
     with col_t1b:
-        t1_ip_max = st.number_input("IP max", value=9999, min_value=0, key="t1_ip_max")
-        t1_patents_max = st.number_input("Brevets 3a max", value=999999, min_value=0, key="t1_pat_max")
+        if vision == "Corporate":
+            t1_ip_max = st.number_input("IP max", value=9999, min_value=0, key=f"{key_prefix}_t1_ip_max")
+            t1_patents_max = st.number_input("Brevets 3a max", value=999999, min_value=0, key=f"{key_prefix}_t1_pat_max")
+        else:
+            t1_contacts_max = st.number_input("Contacts max", value=9999, min_value=0, key=f"{key_prefix}_t1_contacts_max")
 
     st.markdown("---")
 
@@ -432,11 +605,17 @@ with st.sidebar.expander("Définir les Tiers", expanded=False):
     st.markdown("**TIER 2** (Moyens comptes)")
     col_t2a, col_t2b = st.columns(2)
     with col_t2a:
-        t2_ip_min = st.number_input("IP min", value=5, min_value=0, key="t2_ip_min")
-        t2_patents_min = st.number_input("Brevets 3a min", value=0, min_value=0, key="t2_pat_min")
+        if vision == "Corporate":
+            t2_ip_min = st.number_input("IP min", value=5, min_value=0, key=f"{key_prefix}_t2_ip_min")
+            t2_patents_min = st.number_input("Brevets 3a min", value=0, min_value=0, key=f"{key_prefix}_t2_pat_min")
+        else:
+            t2_contacts_min = st.number_input("Contacts min", value=5, min_value=0, key=f"{key_prefix}_t2_contacts_min")
     with col_t2b:
-        t2_ip_max = st.number_input("IP max", value=29, min_value=0, key="t2_ip_max")
-        t2_patents_max = st.number_input("Brevets 3a max", value=999999, min_value=0, key="t2_pat_max")
+        if vision == "Corporate":
+            t2_ip_max = st.number_input("IP max", value=29, min_value=0, key=f"{key_prefix}_t2_ip_max")
+            t2_patents_max = st.number_input("Brevets 3a max", value=999999, min_value=0, key=f"{key_prefix}_t2_pat_max")
+        else:
+            t2_contacts_max = st.number_input("Contacts max", value=29, min_value=0, key=f"{key_prefix}_t2_contacts_max")
 
     st.markdown("---")
 
@@ -444,31 +623,17 @@ with st.sidebar.expander("Définir les Tiers", expanded=False):
     st.markdown("**TIER 3** (Petits comptes)")
     col_t3a, col_t3b = st.columns(2)
     with col_t3a:
-        t3_ip_min = st.number_input("IP min", value=0, min_value=0, key="t3_ip_min")
-        t3_patents_min = st.number_input("Brevets 3a min", value=0, min_value=0, key="t3_pat_min")
+        if vision == "Corporate":
+            t3_ip_min = st.number_input("IP min", value=0, min_value=0, key=f"{key_prefix}_t3_ip_min")
+            t3_patents_min = st.number_input("Brevets 3a min", value=0, min_value=0, key=f"{key_prefix}_t3_pat_min")
+        else:
+            t3_contacts_min = st.number_input("Contacts min", value=0, min_value=0, key=f"{key_prefix}_t3_contacts_min")
     with col_t3b:
-        t3_ip_max = st.number_input("IP max", value=4, min_value=0, key="t3_ip_max")
-        t3_patents_max = st.number_input("Brevets 3a max", value=999999, min_value=0, key="t3_pat_max")
-
-# Calculer le tiering personnalisé
-def calculate_custom_tier(row):
-    ip_count = row.get('IP_Team_Size', 0) or 0
-    patents_3y = row.get('Patents_Recent', 0) or 0
-
-    # T1 : vérifie les conditions
-    if (t1_ip_min <= ip_count <= t1_ip_max) and (t1_patents_min <= patents_3y <= t1_patents_max):
-        return 'T1'
-    # T2
-    elif (t2_ip_min <= ip_count <= t2_ip_max) and (t2_patents_min <= patents_3y <= t2_patents_max):
-        return 'T2'
-    # T3
-    elif (t3_ip_min <= ip_count <= t3_ip_max) and (t3_patents_min <= patents_3y <= t3_patents_max):
-        return 'T3'
-    else:
-        return 'Non classé'
-
-# Appliquer le tiering personnalisé
-df['Custom_Tier'] = df.apply(calculate_custom_tier, axis=1)
+        if vision == "Corporate":
+            t3_ip_max = st.number_input("IP max", value=4, min_value=0, key=f"{key_prefix}_t3_ip_max")
+            t3_patents_max = st.number_input("Brevets 3a max", value=999999, min_value=0, key=f"{key_prefix}_t3_pat_max")
+        else:
+            t3_contacts_max = st.number_input("Contacts max", value=4, min_value=0, key=f"{key_prefix}_t3_contacts_max")
 
 # Appliquer les filtres
 df_filtered = df.copy()
@@ -500,6 +665,17 @@ if exclude_seniorities:
     df_filtered = df_filtered[~df_filtered['Seniority'].isin(exclude_seniorities)]
 if exclude_personas:
     df_filtered = df_filtered[~df_filtered['Persona'].isin(exclude_personas)]
+if include_companies:
+    df_filtered = df_filtered[df_filtered['Entreprise'].isin(include_companies)]
+if exclude_companies:
+    df_filtered = df_filtered[~df_filtered['Entreprise'].isin(exclude_companies)]
+
+# S'assurer qu'on a une clé account unifiée dans le dataframe filtré
+if 'Account_Key' not in df_filtered.columns:
+    if 'normalized_company_name_tam' in df_filtered.columns:
+        df_filtered['Account_Key'] = df_filtered['normalized_company_name_tam']
+    else:
+        df_filtered['Account_Key'] = df_filtered.get('Entreprise', 'Unknown')
 
 # Résumé des filtres actifs
 st.sidebar.markdown("---")
@@ -516,6 +692,10 @@ if include_industries:
     active_filters.append(f"+ Industrie: {len(include_industries)} sélectionnées")
 if exclude_industries:
     active_filters.append(f"- Industrie: {len(exclude_industries)} exclues")
+if include_companies:
+    active_filters.append(f"+ Company: {len(include_companies)} sélectionnée(s)")
+if exclude_companies:
+    active_filters.append(f"- Company: {len(exclude_companies)} exclue(s)")
 
 if active_filters:
     st.sidebar.markdown("**Filtres actifs:**")
@@ -525,13 +705,11 @@ if active_filters:
         st.sidebar.caption(f"... et {len(active_filters) - 5} autres")
 
 # Créer un dataframe au niveau entreprise (1 ligne par account)
-# Utiliser normalized_company_name_tam comme clé principale (5,816 comptes uniques)
-if 'normalized_company_name_tam' in df_filtered.columns:
+if 'Account_Key' in df_filtered.columns:
     # Définir les colonnes d'agrégation
     agg_dict = {
         'Entreprise': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',  # Garder le nom d'entreprise le plus fréquent
         'Tier': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
-        'Custom_Tier': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Non classé',
         'Region': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
         'Industry': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
         'CompanySize': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
@@ -545,10 +723,9 @@ if 'normalized_company_name_tam' in df_filtered.columns:
     if 'Patents_Total' in df_filtered.columns:
         agg_dict['Patents_Total'] = 'first'
 
-    # Grouper par normalized_company_name_tam (la clé de référence)
-    df_companies = df_filtered.groupby('normalized_company_name_tam').agg(agg_dict).reset_index()
-    df_companies.rename(columns={'normalized_company_name_tam': 'Account_Key'}, inplace=True)
-    df_companies['Profile_Count'] = df_filtered.groupby('normalized_company_name_tam').size().values
+    # Grouper par Account_Key (clé unique)
+    df_companies = df_filtered.groupby('Account_Key').agg(agg_dict).reset_index()
+    df_companies['Profile_Count'] = df_filtered.groupby('Account_Key').size().values
     total_accounts = len(df_companies)
 
     # Calculer les totaux de brevets (sans duplication)
@@ -562,9 +739,60 @@ else:
     total_patents = 0
     accounts_with_patents = 0
 
+# Calculer le tiering personnalisé au niveau account, puis le réinjecter sur les contacts
+if len(df_companies) > 0:
+    if vision == "Corporate":
+        def calculate_custom_tier_company(row):
+            ip_count = row.get('IP_Team_Size', 0) or 0
+            patents_3y = row.get('Patents_Recent', 0) or 0
+            if (t1_ip_min <= ip_count <= t1_ip_max) and (t1_patents_min <= patents_3y <= t1_patents_max):
+                return 'T1'
+            elif (t2_ip_min <= ip_count <= t2_ip_max) and (t2_patents_min <= patents_3y <= t2_patents_max):
+                return 'T2'
+            elif (t3_ip_min <= ip_count <= t3_ip_max) and (t3_patents_min <= patents_3y <= t3_patents_max):
+                return 'T3'
+            else:
+                return 'Non classé'
+    else:
+        def calculate_custom_tier_company(row):
+            contacts = row.get('Profile_Count', 0) or 0
+            if (t1_contacts_min <= contacts <= t1_contacts_max):
+                return 'T1'
+            elif (t2_contacts_min <= contacts <= t2_contacts_max):
+                return 'T2'
+            elif (t3_contacts_min <= contacts <= t3_contacts_max):
+                return 'T3'
+            else:
+                return 'Non classé'
+
+    df_companies['Custom_Tier'] = df_companies.apply(calculate_custom_tier_company, axis=1)
+    df_filtered = df_filtered.merge(
+        df_companies[['Account_Key', 'Custom_Tier']],
+        on='Account_Key',
+        how='left'
+    )
+else:
+    df_filtered['Custom_Tier'] = 'Non classé'
+
 total_profiles = len(df_filtered)
 
 st.sidebar.info(f"**{total_accounts:,}** accounts | **{total_profiles:,}** profils")
+
+# Encadré "Unknown" : explication + dénombrement par dimension
+with st.sidebar.expander("À propos des valeurs « Unknown »", expanded=False):
+    st.caption(
+        "**Unknown** = donnée manquante ou non classée dans la source. "
+        "Ci-dessous : nombre de contacts (filtrés) ayant Unknown pour chaque dimension."
+    )
+    unknown_cols = [c for c in ['Region', 'Persona', 'Workflow', 'Seniority', 'Industry', 'CompanySize', 'Entreprise'] if c in df_filtered.columns]
+    if unknown_cols:
+        total_f = len(df_filtered)
+        for col in unknown_cols:
+            n_unknown = (df_filtered[col].astype(str).str.strip() == 'Unknown').sum() + (df_filtered[col].isna()).sum()
+            pct = (n_unknown / total_f * 100) if total_f else 0
+            st.caption(f"**{col}** : {n_unknown:,} ({pct:.1f}%)")
+    else:
+        st.caption("Aucune dimension à afficher.")
 
 # === KPIs EN HAUT ===
 st.markdown("### Indicateurs Clés (Tiering Personnalisé)")
@@ -772,28 +1000,29 @@ with tab1:
             )
             st.plotly_chart(fig_size, use_container_width=True)
 
-    # Top 15 Entreprises par nombre de profils IP
-    if 'Entreprise' in df_filtered.columns:
-        st.markdown("### Top 15 Accounts par taille d'équipe IP")
+    # Top 15 Accounts par nombre de contacts (profilés)
+    if len(df_companies) > 0 and 'Profile_Count' in df_companies.columns:
+        st.markdown("### Top 15 Accounts par nombre de contacts")
 
-        company_counts = df_filtered['Entreprise'].value_counts().nlargest(15)
+        top_accounts = df_companies.nlargest(15, 'Profile_Count').copy()
+        x_labels = top_accounts['Entreprise'] if 'Entreprise' in top_accounts.columns else top_accounts['Account_Key']
 
         fig_companies = go.Figure(data=[go.Bar(
-            x=company_counts.index,
-            y=company_counts.values,
+            x=x_labels,
+            y=top_accounts['Profile_Count'],
             marker=dict(
-                color=company_counts.values,
+                color=top_accounts['Profile_Count'],
                 colorscale=[[0, '#6366f1'], [0.5, '#8b5cf6'], [1, '#f97316']],
                 showscale=False
             ),
-            text=company_counts.values,
+            text=top_accounts['Profile_Count'],
             textposition='outside',
             textfont=dict(color='white', size=12, family='Inter, sans-serif')
         )])
 
         fig_companies.update_layout(
             xaxis_title='',
-            yaxis_title='Nombre de profils IP',
+            yaxis_title='Nombre de contacts',
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
             font=dict(color='#ffffff', family='Inter, -apple-system, BlinkMacSystemFont, sans-serif'),
@@ -804,20 +1033,24 @@ with tab1:
             yaxis=dict(gridcolor='rgba(255,255,255,0.1)', linecolor='rgba(255,255,255,0.2)', tickfont=dict(family='Inter, sans-serif'))
         )
         st.plotly_chart(fig_companies, use_container_width=True)
-        st.caption("Ce graphique montre le nombre de profils IP par entreprise (pas les accounts).")
+        st.caption("Ce graphique montre le nombre de contacts (profils) par account.")
 
 # === ONGLET 2: STRATÉGIE IP (basé sur les ACCOUNTS) ===
 with tab2:
     st.caption("Statistiques basées sur les accounts (entreprises uniques).")
 
     # Ajouter Workflow et Persona au df_companies si pas déjà fait
-    if 'Entreprise' in df_filtered.columns and len(df_companies) > 0:
+    if 'Account_Key' in df_filtered.columns and len(df_companies) > 0:
         if 'Workflow' not in df_companies.columns and 'Workflow' in df_filtered.columns:
-            workflow_by_company = df_filtered.groupby('Entreprise')['Workflow'].agg(lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown')
-            df_companies = df_companies.merge(workflow_by_company.reset_index(), on='Entreprise', how='left')
+            workflow_by_account = df_filtered.groupby('Account_Key')['Workflow'].agg(lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown')
+            df_companies = df_companies.merge(workflow_by_account.reset_index(), on='Account_Key', how='left')
         if 'Persona' not in df_companies.columns and 'Persona' in df_filtered.columns:
-            persona_by_company = df_filtered.groupby('Entreprise')['Persona'].agg(lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown')
-            df_companies = df_companies.merge(persona_by_company.reset_index(), on='Entreprise', how='left')
+            persona_by_account = df_filtered.groupby('Account_Key')['Persona'].agg(lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown')
+            df_companies = df_companies.merge(persona_by_account.reset_index(), on='Account_Key', how='left')
+        # Éviter NaN / undefined dans les graphiques
+        for c in ['Workflow', 'Persona']:
+            if c in df_companies.columns:
+                df_companies[c] = df_companies[c].fillna('Unknown').astype(str).replace('nan', 'Unknown').replace('', 'Unknown')
 
     col1, col2 = st.columns(2)
 
@@ -825,9 +1058,10 @@ with tab2:
         # Distribution Workflow (basé sur les accounts)
         if 'Workflow' in df_companies.columns and len(df_companies) > 0:
             workflow_counts = df_companies['Workflow'].value_counts()
+            wf_labels = [str(x).strip() if pd.notna(x) and str(x).strip() else 'Unknown' for x in workflow_counts.index]
 
             fig_workflow = go.Figure(data=[go.Pie(
-                labels=workflow_counts.index,
+                labels=wf_labels,
                 values=workflow_counts.values,
                 hole=0.4,
                 marker=dict(colors=['#6366f1', '#8b5cf6', '#f97316', '#fb923c']),
@@ -847,9 +1081,10 @@ with tab2:
         # Distribution Persona (basé sur les accounts)
         if 'Persona' in df_companies.columns and len(df_companies) > 0:
             persona_counts = df_companies['Persona'].value_counts()
+            pers_labels = [str(x).strip() if pd.notna(x) and str(x).strip() else 'Unknown' for x in persona_counts.index]
 
             fig_persona = go.Figure(data=[go.Pie(
-                labels=persona_counts.index,
+                labels=pers_labels,
                 values=persona_counts.values,
                 hole=0.4,
                 marker=dict(colors=['#4facfe', '#00f2fe', '#6366f1', '#8b5cf6', '#f97316']),
@@ -869,16 +1104,19 @@ with tab2:
     if 'Custom_Tier' in df_companies.columns and 'Workflow' in df_companies.columns and len(df_companies) > 0:
         st.markdown("### Tiering Personnalisé vs Workflow (Accounts)")
 
-        tier_workflow = pd.crosstab(df_companies['Custom_Tier'], df_companies['Workflow'])
+        _ct = df_companies['Custom_Tier'].fillna('Non classé').astype(str)
+        _wf = df_companies['Workflow'].fillna('Unknown').astype(str).replace('nan', 'Unknown')
+        tier_workflow = pd.crosstab(_ct, _wf)
         tier_order = ['T1', 'T2', 'T3', 'Non classé']
         tier_workflow = tier_workflow.reindex([t for t in tier_order if t in tier_workflow.index])
+        tier_workflow.columns = [str(c).strip() if pd.notna(c) and str(c).strip() else 'Unknown' for c in tier_workflow.columns]
 
         fig_tier_workflow = go.Figure()
 
         colors_workflow = ['#6366f1', '#8b5cf6', '#f97316', '#fb923c']
         for i, workflow in enumerate(tier_workflow.columns):
             fig_tier_workflow.add_trace(go.Bar(
-                name=workflow,
+                name=str(workflow) if workflow else 'Unknown',
                 x=tier_workflow.index,
                 y=tier_workflow[workflow],
                 marker_color=colors_workflow[i % len(colors_workflow)],
@@ -897,17 +1135,17 @@ with tab2:
         st.plotly_chart(fig_tier_workflow, use_container_width=True)
 
     # IP Density si possible
-    if 'Entreprise' in df_filtered.columns and 'Headcount' in df_filtered.columns:
+    if 'Account_Key' in df_filtered.columns and 'Headcount' in df_filtered.columns:
         st.markdown("### Densité IP par Entreprise")
 
-        company_stats = df_filtered.groupby('Entreprise').agg({
+        company_stats = df_filtered.groupby('Account_Key').agg({
             'Headcount': 'first',
             'Custom_Tier': 'first'
         }).reset_index()
         company_stats.rename(columns={'Custom_Tier': 'Tier'}, inplace=True)
 
-        profile_counts = df_filtered.groupby('Entreprise').size().reset_index(name='IP_Profiles')
-        company_stats = company_stats.merge(profile_counts, on='Entreprise')
+        profile_counts = df_filtered.groupby('Account_Key').size().reset_index(name='IP_Profiles')
+        company_stats = company_stats.merge(profile_counts, on='Account_Key')
 
         # Calculer la densité
         company_stats['IP_Density'] = (company_stats['IP_Profiles'] / company_stats['Headcount']) * 100
@@ -921,7 +1159,7 @@ with tab2:
                 color='Tier',
                 color_discrete_map={'T1': '#6366f1', 'T2': '#8b5cf6', 'T3': '#f97316'},
                 points='all',
-                hover_data=['Entreprise', 'IP_Profiles', 'Headcount']
+                hover_data=['Account_Key', 'IP_Profiles', 'Headcount']
             )
 
             fig_density.update_layout(
@@ -1115,6 +1353,39 @@ with tab3:
             )
             st.plotly_chart(fig_jobs, use_container_width=True)
 
+            # Jobs les plus présents dans les accounts (comptage en comptes uniques)
+            if 'Account_Key' in df_filtered.columns:
+                st.markdown("### Titres les plus présents (par account)")
+                job_accounts = (
+                    df_filtered[df_filtered['JobTitle'].notna() & (df_filtered['JobTitle'] != 'Unknown')]
+                    .groupby('JobTitle')['Account_Key']
+                    .nunique()
+                    .sort_values(ascending=False)
+                    .head(10)
+                )
+                if len(job_accounts) > 0:
+                    fig_jobs_accounts = go.Figure(data=[go.Bar(
+                        y=job_accounts.index[::-1],
+                        x=job_accounts.values[::-1],
+                        orientation='h',
+                        marker=dict(
+                            color=list(range(len(job_accounts))),
+                            colorscale=[[0, '#f97316'], [1, '#6366f1']],
+                            showscale=False
+                        ),
+                        text=job_accounts.values[::-1],
+                        textposition='outside',
+                        textfont=dict(color='white', size=11)
+                    )])
+                    fig_jobs_accounts.update_layout(
+                        title='Top 10 Job Titles par présence dans les accounts',
+                        xaxis_title='Nombre d\'accounts uniques',
+                        yaxis_title='',
+                        **chart_layout,
+                        height=400
+                    )
+                    st.plotly_chart(fig_jobs_accounts, use_container_width=True)
+
     # Seniority par Tier
     if 'Seniority' in df_filtered.columns and 'Custom_Tier' in df_filtered.columns:
 
@@ -1184,6 +1455,16 @@ with tab3:
 st.markdown("---")
 st.markdown("### Exporter les données")
 
+# Liste de contacts (filtrée)
+with st.expander("Voir la liste de contacts (filtrée)", expanded=False):
+    preferred_cols = [
+        'Prénom', 'Nom', 'Email', 'Numéro de téléphone',
+        'JobTitle', 'Entreprise', 'Industry', 'Region',
+        'URL LinkedIn (profil utilisateur)', 'URL LinkedIn (entreprise)', 'Company Website'
+    ]
+    cols_to_show = [c for c in preferred_cols if c in df_filtered.columns]
+    st.dataframe(df_filtered[cols_to_show] if cols_to_show else df_filtered, use_container_width=True, height=420)
+
 @st.cache_data
 def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
@@ -1195,7 +1476,7 @@ with col_dl1:
     st.download_button(
         label="Télécharger CSV",
         data=csv_data,
-        file_name="tam_filtered_export.csv",
+        file_name=("tam_corporate_filtered_export.csv" if vision == "Corporate" else "tam_law_firms_filtered_export.csv"),
         mime="text/csv",
     )
 
