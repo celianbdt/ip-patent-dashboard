@@ -271,7 +271,7 @@ def load_corporate_data():
     # Charger la liste de référence des comptes
     accounts_ref = pd.read_csv('data/Final Accounts Summary.csv', low_memory=False)
     valid_accounts = set(accounts_ref['normalized_company_name_tam'].dropna().unique())
-    
+
     # Nettoyer les noms de colonnes
     df.columns = [c.replace('\n', ' ').strip() for c in df.columns]
 
@@ -289,7 +289,7 @@ def load_corporate_data():
     }
 
     df.rename(columns=column_mapping, inplace=True)
-    
+
     # FILTRER : Ne garder que les comptes qui sont dans la liste de référence
     if 'normalized_company_name_tam' in df.columns:
         df = df[df['normalized_company_name_tam'].isin(valid_accounts)].copy()
@@ -463,14 +463,12 @@ def load_law_firm_data():
     if 'Tier' not in df.columns:
         df['Tier'] = 'Unknown'
 
-    # Clé account (cabinet) : URN entreprise > URL entreprise > Nom entreprise
-    def _pick_account_key(row):
-        for c in ['URN LinkedIn de l\'entreprise', 'URL LinkedIn (entreprise)', 'Entreprise']:
-            if c in row and isinstance(row[c], str) and row[c].strip():
-                return row[c].strip()
-        return 'Unknown'
-
-    df['Account_Key'] = df.apply(_pick_account_key, axis=1)
+    # Clé account (cabinet) : nom de compte uniquement (colonne Entreprise) — ~5900 comptes
+    if 'Entreprise' in df.columns:
+        df['Account_Key'] = df['Entreprise'].astype(str).str.strip()
+        df.loc[df['Account_Key'].isin(['', 'nan', 'None']), 'Account_Key'] = 'Unknown'
+    else:
+        df['Account_Key'] = 'Unknown'
 
     # Gestion des valeurs manquantes
     for col in df.columns:
@@ -532,56 +530,10 @@ def create_filter_with_exclude(label, column, help_text=None, df_source=None, ke
 
     return include_list, exclude_list
 
-# Filtre Tier
-include_tiers, exclude_tiers = create_filter_with_exclude(
-    "Tiering", "Tier",
-    "T1: >30 profils IP | T2: 5-30 | T3: <5"
-    , df_source=df, key_prefix=key_prefix
-)
-
-# Filtre Région
-include_regions, exclude_regions = create_filter_with_exclude(
-    "Région", "Region"
-    , df_source=df, key_prefix=key_prefix
-)
-
-# Filtre Company / Cabinet (Entreprise) — pour filtrer par law firm ou entreprise
-include_companies, exclude_companies = create_filter_with_exclude(
-    "Company / Cabinet", "Entreprise",
-    "Filtrer par nom d'entreprise ou de cabinet (ex. une seule law firm).",
-    df_source=df, key_prefix=key_prefix
-)
-
-# Filtre Industry
-include_industries, exclude_industries = create_filter_with_exclude(
-    "Industrie", "Industry"
-    , df_source=df, key_prefix=key_prefix
-)
-
-# Filtre Company Size
-include_sizes, exclude_sizes = create_filter_with_exclude(
-    "Taille entreprise", "CompanySize"
-    , df_source=df, key_prefix=key_prefix
-)
-
-# Filtre Seniority
-include_seniorities, exclude_seniorities = create_filter_with_exclude(
-    "Séniorité", "Seniority"
-    , df_source=df, key_prefix=key_prefix
-)
-
-# Filtre Persona
-include_personas, exclude_personas = create_filter_with_exclude(
-    "Persona", "Persona"
-    , df_source=df, key_prefix=key_prefix
-)
-
-# === DÉFINITION TIERING PERSONNALISÉ ===
-st.sidebar.markdown("---")
+# === DÉFINITION TIERING PERSONNALISÉ (avant les filtres, pour filtrer sur Custom_Tier) ===
 st.sidebar.markdown("## Tiering Personnalisé")
-st.sidebar.caption("Définissez vos propres critères de tiering")
+st.sidebar.caption("Définissez vos critères ; le filtre Tiering ci-dessous utilisera ce classement.")
 
-# Valeurs par défaut pour le tiering
 with st.sidebar.expander("Définir les Tiers", expanded=False):
     if vision == "Corporate":
         st.markdown("**Critères : Nombre de praticiens IP**")
@@ -603,7 +555,6 @@ with st.sidebar.expander("Définir les Tiers", expanded=False):
             t1_contacts_max = st.number_input("Contacts max", value=9999, min_value=0, key=f"{key_prefix}_t1_contacts_max")
 
     st.markdown("---")
-
     # TIER 2
     st.markdown("**TIER 2** (Moyens comptes)")
     col_t2a, col_t2b = st.columns(2)
@@ -619,7 +570,6 @@ with st.sidebar.expander("Définir les Tiers", expanded=False):
             t2_contacts_max = st.number_input("Contacts max", value=29, min_value=0, key=f"{key_prefix}_t2_contacts_max")
 
     st.markdown("---")
-
     # TIER 3
     st.markdown("**TIER 3** (Petits comptes)")
     col_t3a, col_t3b = st.columns(2)
@@ -634,40 +584,132 @@ with st.sidebar.expander("Définir les Tiers", expanded=False):
         else:
             t3_contacts_max = st.number_input("Contacts max", value=4, min_value=0, key=f"{key_prefix}_t3_contacts_max")
 
-# Appliquer les filtres
-df_filtered = df.copy()
+# Calculer Custom_Tier sur tous les accounts (selon nos critères, pas le Tier du fichier) et l'ajouter à df
+if 'Account_Key' in df.columns:
+    agg_early = {}
+    if 'IP_Ref' in df.columns:
+        agg_early['IP_Ref'] = 'first'
+    if 'IP_Team_Size' in df.columns:
+        agg_early['IP_Team_Size'] = 'first'
+    # Au moins une colonne pour éviter groupby().agg({}) vide (Law firms n'ont pas IP_Ref/IP_Team_Size)
+    if 'Entreprise' in df.columns:
+        agg_early['Entreprise'] = 'first'
+    if agg_early:
+        _by_key = df.groupby('Account_Key').agg(agg_early).reset_index()
+    else:
+        _by_key = df.groupby('Account_Key').size().reset_index(name='Profile_Count')
+    _by_key['Profile_Count'] = df.groupby('Account_Key').size().values
+    if vision == "Corporate":
+        def _ct_corp(row):
+            ip = row.get('IP_Ref', row.get('IP_Team_Size', 0)) or 0
+            if t1_ip_min <= ip <= t1_ip_max: return 'T1'
+            if t2_ip_min <= ip <= t2_ip_max: return 'T2'
+            if t3_ip_min <= ip <= t3_ip_max: return 'T3'
+            return 'Non classé'
+        _by_key['Custom_Tier'] = _by_key.apply(_ct_corp, axis=1)
+    else:
+        def _ct_law(row):
+            c = row.get('Profile_Count', 0) or 0
+            if t1_contacts_min <= c <= t1_contacts_max: return 'T1'
+            if t2_contacts_min <= c <= t2_contacts_max: return 'T2'
+            if t3_contacts_min <= c <= t3_contacts_max: return 'T3'
+            return 'Non classé'
+        _by_key['Custom_Tier'] = _by_key.apply(_ct_law, axis=1)
+    df = df.merge(_by_key[['Account_Key', 'Custom_Tier']], on='Account_Key', how='left')
+else:
+    df['Custom_Tier'] = 'Non classé'
 
-# Appliquer INCLUSIONS (si sélectionnées)
-if include_tiers:
-    df_filtered = df_filtered[df_filtered['Tier'].isin(include_tiers)]
-if include_regions:
-    df_filtered = df_filtered[df_filtered['Region'].isin(include_regions)]
-if include_industries and 'Industry' in df_filtered.columns:
-    df_filtered = df_filtered[df_filtered['Industry'].isin(include_industries)]
-if include_sizes:
-    df_filtered = df_filtered[df_filtered['CompanySize'].isin(include_sizes)]
+# DataFrame au niveau account (1 ligne par Account_Key) pour filtres account-level (mode par compte)
+if 'Account_Key' in df.columns:
+    df_accounts = df.groupby('Account_Key').agg(
+        Region_account=('Region', lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown'),
+        Industry_account=('Industry', lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown'),
+        CompanySize_account=('CompanySize', lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown'),
+        Entreprise=('Entreprise', lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown'),
+        Custom_Tier=('Custom_Tier', 'first'),
+    ).reset_index()
+else:
+    df_accounts = pd.DataFrame()
+
+# Filtre Tiering : sur Custom_Tier (notre définition)
+include_tiers, exclude_tiers = create_filter_with_exclude(
+    "Tiering", "Custom_Tier",
+    "Basé sur vos critères ci-dessus (T1/T2/T3/Non classé)."
+    , df_source=df_accounts if len(df_accounts) > 0 else df, key_prefix=key_prefix
+)
+
+# Filtres au niveau ACCOUNT (mode par compte — évite double comptage NA+EU etc.)
+include_regions, exclude_regions = create_filter_with_exclude(
+    "Région", "Region_account",
+    "Filtre par région du compte (mode des contacts).",
+    df_source=df_accounts, key_prefix=key_prefix
+)
+include_companies, exclude_companies = create_filter_with_exclude(
+    "Company / Cabinet", "Entreprise",
+    "Filtrer par nom d'entreprise ou de cabinet (ex. une seule law firm).",
+    df_source=df_accounts, key_prefix=key_prefix
+)
+include_industries, exclude_industries = create_filter_with_exclude(
+    "Industrie", "Industry_account",
+    "Filtre par industrie du compte (mode des contacts).",
+    df_source=df_accounts, key_prefix=key_prefix
+)
+include_sizes, exclude_sizes = create_filter_with_exclude(
+    "Taille entreprise", "CompanySize_account",
+    "Filtre par taille du compte (mode des contacts).",
+    df_source=df_accounts, key_prefix=key_prefix
+)
+
+# Filtre Seniority
+include_seniorities, exclude_seniorities = create_filter_with_exclude(
+    "Séniorité", "Seniority"
+    , df_source=df, key_prefix=key_prefix
+)
+
+# Filtre Persona
+include_personas, exclude_personas = create_filter_with_exclude(
+    "Persona", "Persona"
+    , df_source=df, key_prefix=key_prefix
+)
+
+# Appliquer les filtres : d'abord au niveau ACCOUNT, puis Séniorité/Persona au niveau contact
+if len(df_accounts) > 0:
+    accounts_selection = set(df_accounts['Account_Key'])
+    # INCLUSIONS account-level
+    if include_tiers:
+        accounts_selection &= set(df_accounts[df_accounts['Custom_Tier'].isin(include_tiers)]['Account_Key'])
+    if include_regions:
+        accounts_selection &= set(df_accounts[df_accounts['Region_account'].isin(include_regions)]['Account_Key'])
+    if include_industries:
+        accounts_selection &= set(df_accounts[df_accounts['Industry_account'].isin(include_industries)]['Account_Key'])
+    if include_sizes:
+        accounts_selection &= set(df_accounts[df_accounts['CompanySize_account'].isin(include_sizes)]['Account_Key'])
+    if include_companies:
+        accounts_selection &= set(df_accounts[df_accounts['Entreprise'].isin(include_companies)]['Account_Key'])
+    # EXCLUSIONS account-level
+    if exclude_tiers:
+        accounts_selection -= set(df_accounts[df_accounts['Custom_Tier'].isin(exclude_tiers)]['Account_Key'])
+    if exclude_regions:
+        accounts_selection -= set(df_accounts[df_accounts['Region_account'].isin(exclude_regions)]['Account_Key'])
+    if exclude_industries:
+        accounts_selection -= set(df_accounts[df_accounts['Industry_account'].isin(exclude_industries)]['Account_Key'])
+    if exclude_sizes:
+        accounts_selection -= set(df_accounts[df_accounts['CompanySize_account'].isin(exclude_sizes)]['Account_Key'])
+    if exclude_companies:
+        accounts_selection -= set(df_accounts[df_accounts['Entreprise'].isin(exclude_companies)]['Account_Key'])
+    df_filtered = df[df['Account_Key'].isin(accounts_selection)].copy()
+else:
+    df_filtered = df.copy()
+
+# Filtres au niveau CONTACT (Séniorité, Persona)
 if include_seniorities:
     df_filtered = df_filtered[df_filtered['Seniority'].isin(include_seniorities)]
 if include_personas:
     df_filtered = df_filtered[df_filtered['Persona'].isin(include_personas)]
-
-# Appliquer EXCLUSIONS
-if exclude_tiers:
-    df_filtered = df_filtered[~df_filtered['Tier'].isin(exclude_tiers)]
-if exclude_regions:
-    df_filtered = df_filtered[~df_filtered['Region'].isin(exclude_regions)]
-if exclude_industries and 'Industry' in df_filtered.columns:
-    df_filtered = df_filtered[~df_filtered['Industry'].isin(exclude_industries)]
-if exclude_sizes:
-    df_filtered = df_filtered[~df_filtered['CompanySize'].isin(exclude_sizes)]
 if exclude_seniorities:
     df_filtered = df_filtered[~df_filtered['Seniority'].isin(exclude_seniorities)]
 if exclude_personas:
     df_filtered = df_filtered[~df_filtered['Persona'].isin(exclude_personas)]
-if include_companies:
-    df_filtered = df_filtered[df_filtered['Entreprise'].isin(include_companies)]
-if exclude_companies:
-    df_filtered = df_filtered[~df_filtered['Entreprise'].isin(exclude_companies)]
 
 # S'assurer qu'on a une clé account unifiée dans le dataframe filtré
 if 'Account_Key' not in df_filtered.columns:
@@ -707,11 +749,11 @@ if active_filters:
 if 'Account_Key' in df_filtered.columns:
     # Définir les colonnes d'agrégation
     agg_dict = {
-        'Entreprise': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',  # Garder le nom d'entreprise le plus fréquent
-        'Tier': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
+        'Entreprise': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
         'Region': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
         'Industry': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
         'CompanySize': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown',
+        'Custom_Tier': 'first',
     }
 
     # Ajouter les colonnes patents si elles existent (prendre la première valeur - c'est par account)
@@ -740,41 +782,7 @@ else:
     total_patents = 0
     accounts_with_patents = 0
 
-# Calculer le tiering personnalisé au niveau account, puis le réinjecter sur les contacts
-if len(df_companies) > 0:
-    if vision == "Corporate":
-        def calculate_custom_tier_company(row):
-            # Tiering basé sur Final Accounts Summary (IP_Ref), pas sur Merged (IP_Team_Size)
-            ip_count = row.get('IP_Ref', row.get('IP_Team_Size', 0)) or 0
-            if t1_ip_min <= ip_count <= t1_ip_max:
-                return 'T1'
-            elif t2_ip_min <= ip_count <= t2_ip_max:
-                return 'T2'
-            elif t3_ip_min <= ip_count <= t3_ip_max:
-                return 'T3'
-            else:
-                return 'Non classé'
-    else:
-        def calculate_custom_tier_company(row):
-            contacts = row.get('Profile_Count', 0) or 0
-            if (t1_contacts_min <= contacts <= t1_contacts_max):
-                return 'T1'
-            elif (t2_contacts_min <= contacts <= t2_contacts_max):
-                return 'T2'
-            elif (t3_contacts_min <= contacts <= t3_contacts_max):
-                return 'T3'
-            else:
-                return 'Non classé'
-
-    df_companies['Custom_Tier'] = df_companies.apply(calculate_custom_tier_company, axis=1)
-    df_filtered = df_filtered.merge(
-        df_companies[['Account_Key', 'Custom_Tier']],
-        on='Account_Key',
-        how='left'
-    )
-else:
-    df_filtered['Custom_Tier'] = 'Non classé'
-
+# Custom_Tier est déjà dans df_filtered (calculé plus haut selon nos critères)
 total_profiles = len(df_filtered)
 
 st.sidebar.info(f"**{total_accounts:,}** accounts | **{total_profiles:,}** profils")
