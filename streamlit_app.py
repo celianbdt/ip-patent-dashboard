@@ -294,6 +294,11 @@ def load_corporate_data():
     if 'normalized_company_name_tam' in df.columns:
         df = df[df['normalized_company_name_tam'].isin(valid_accounts)].copy()
         st.info(f"✅ Filtrage appliqué : {len(valid_accounts):,} comptes de référence | {len(df):,} profils")
+        # Source de vérité pour le tiering : nombre_de_praticiens_IP du Summary (pas du Merged)
+        ref_counts = accounts_ref[['normalized_company_name_tam', 'nombre_de_praticiens_IP']].drop_duplicates()
+        ref_counts = ref_counts.rename(columns={'nombre_de_praticiens_IP': 'IP_Ref'})
+        df = df.merge(ref_counts, on='normalized_company_name_tam', how='left')
+        df['IP_Ref'] = pd.to_numeric(df['IP_Ref'], errors='coerce').fillna(0).astype(int)
 
     # Convertir Headcount en numérique
     if 'Headcount' in df.columns:
@@ -579,7 +584,7 @@ st.sidebar.caption("Définissez vos propres critères de tiering")
 # Valeurs par défaut pour le tiering
 with st.sidebar.expander("Définir les Tiers", expanded=False):
     if vision == "Corporate":
-        st.markdown("**Critères : Personnes IP + Brevets 3 ans**")
+        st.markdown("**Critères : Nombre de praticiens IP**")
     else:
         st.markdown("**Critères : Nombre de contacts par cabinet (accounts uniques)**")
 
@@ -589,13 +594,11 @@ with st.sidebar.expander("Définir les Tiers", expanded=False):
     with col_t1a:
         if vision == "Corporate":
             t1_ip_min = st.number_input("IP min", value=30, min_value=0, key=f"{key_prefix}_t1_ip_min")
-            t1_patents_min = st.number_input("Brevets 3a min", value=0, min_value=0, key=f"{key_prefix}_t1_pat_min")
         else:
             t1_contacts_min = st.number_input("Contacts min", value=30, min_value=0, key=f"{key_prefix}_t1_contacts_min")
     with col_t1b:
         if vision == "Corporate":
             t1_ip_max = st.number_input("IP max", value=9999, min_value=0, key=f"{key_prefix}_t1_ip_max")
-            t1_patents_max = st.number_input("Brevets 3a max", value=999999, min_value=0, key=f"{key_prefix}_t1_pat_max")
         else:
             t1_contacts_max = st.number_input("Contacts max", value=9999, min_value=0, key=f"{key_prefix}_t1_contacts_max")
 
@@ -607,13 +610,11 @@ with st.sidebar.expander("Définir les Tiers", expanded=False):
     with col_t2a:
         if vision == "Corporate":
             t2_ip_min = st.number_input("IP min", value=5, min_value=0, key=f"{key_prefix}_t2_ip_min")
-            t2_patents_min = st.number_input("Brevets 3a min", value=0, min_value=0, key=f"{key_prefix}_t2_pat_min")
         else:
             t2_contacts_min = st.number_input("Contacts min", value=5, min_value=0, key=f"{key_prefix}_t2_contacts_min")
     with col_t2b:
         if vision == "Corporate":
             t2_ip_max = st.number_input("IP max", value=29, min_value=0, key=f"{key_prefix}_t2_ip_max")
-            t2_patents_max = st.number_input("Brevets 3a max", value=999999, min_value=0, key=f"{key_prefix}_t2_pat_max")
         else:
             t2_contacts_max = st.number_input("Contacts max", value=29, min_value=0, key=f"{key_prefix}_t2_contacts_max")
 
@@ -625,13 +626,11 @@ with st.sidebar.expander("Définir les Tiers", expanded=False):
     with col_t3a:
         if vision == "Corporate":
             t3_ip_min = st.number_input("IP min", value=0, min_value=0, key=f"{key_prefix}_t3_ip_min")
-            t3_patents_min = st.number_input("Brevets 3a min", value=0, min_value=0, key=f"{key_prefix}_t3_pat_min")
         else:
             t3_contacts_min = st.number_input("Contacts min", value=0, min_value=0, key=f"{key_prefix}_t3_contacts_min")
     with col_t3b:
         if vision == "Corporate":
             t3_ip_max = st.number_input("IP max", value=4, min_value=0, key=f"{key_prefix}_t3_ip_max")
-            t3_patents_max = st.number_input("Brevets 3a max", value=999999, min_value=0, key=f"{key_prefix}_t3_pat_max")
         else:
             t3_contacts_max = st.number_input("Contacts max", value=4, min_value=0, key=f"{key_prefix}_t3_contacts_max")
 
@@ -718,6 +717,8 @@ if 'Account_Key' in df_filtered.columns:
     # Ajouter les colonnes patents si elles existent (prendre la première valeur - c'est par account)
     if 'IP_Team_Size' in df_filtered.columns:
         agg_dict['IP_Team_Size'] = 'first'
+    if 'IP_Ref' in df_filtered.columns:
+        agg_dict['IP_Ref'] = 'first'
     if 'Patents_Recent' in df_filtered.columns:
         agg_dict['Patents_Recent'] = 'first'
     if 'Patents_Total' in df_filtered.columns:
@@ -743,13 +744,13 @@ else:
 if len(df_companies) > 0:
     if vision == "Corporate":
         def calculate_custom_tier_company(row):
-            ip_count = row.get('IP_Team_Size', 0) or 0
-            patents_3y = row.get('Patents_Recent', 0) or 0
-            if (t1_ip_min <= ip_count <= t1_ip_max) and (t1_patents_min <= patents_3y <= t1_patents_max):
+            # Tiering basé sur Final Accounts Summary (IP_Ref), pas sur Merged (IP_Team_Size)
+            ip_count = row.get('IP_Ref', row.get('IP_Team_Size', 0)) or 0
+            if t1_ip_min <= ip_count <= t1_ip_max:
                 return 'T1'
-            elif (t2_ip_min <= ip_count <= t2_ip_max) and (t2_patents_min <= patents_3y <= t2_patents_max):
+            elif t2_ip_min <= ip_count <= t2_ip_max:
                 return 'T2'
-            elif (t3_ip_min <= ip_count <= t3_ip_max) and (t3_patents_min <= patents_3y <= t3_patents_max):
+            elif t3_ip_min <= ip_count <= t3_ip_max:
                 return 'T3'
             else:
                 return 'Non classé'
